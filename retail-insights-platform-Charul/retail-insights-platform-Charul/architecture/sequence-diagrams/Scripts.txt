@@ -1,0 +1,130 @@
+1. click-to-cart-attribution
+
+
+sequenceDiagram
+    autonumber
+
+    participant Kafka
+    participant Flink
+    participant State as Session State Store
+    participant DDB as DynamoDB
+
+    Kafka->>Flink: AD_CLICK
+
+    Flink->>State: Store Click Context
+    Note over State: campaignId<br/>productId<br/>clickTime
+
+    Kafka->>Flink: ADD_TO_CART
+
+    Flink->>State: Fetch Click Context
+
+    alt Click Found Within 30 Minutes
+
+        Flink->>Flink: Create Attribution Event
+
+        Flink->>DDB: Update Campaign Metrics
+
+    else No Valid Click
+
+        Flink->>Flink: Ignore Attribution
+
+    end
+
+
+2. event-ingestion
+
+
+sequenceDiagram
+    autonumber
+
+    participant Client as Retail Web/Mobile
+    participant APIGW as API Gateway
+    participant Collector as Event Collector Service
+    participant Kafka as Kafka/MSK
+
+    Client->>APIGW: POST /v1/events
+
+    APIGW->>APIGW: Authenticate JWT
+    APIGW->>APIGW: Rate Limit
+    APIGW->>APIGW: Validate Request
+
+    APIGW->>Collector: Forward Event
+
+    Collector->>Collector: Schema Validation
+    Collector->>Collector: Add TraceId
+    Collector->>Collector: Resolve Tenant
+
+    Collector->>Kafka: Publish Event (acks=all)
+
+    Kafka-->>Collector: Acknowledgement
+
+    Collector-->>APIGW: 202 Accepted
+
+    APIGW-->>Client: Event Accepted
+
+
+3. insights-query
+
+    
+
+sequenceDiagram
+    autonumber
+
+    participant Dashboard as Marketer Dashboard
+    participant API as Insights API
+    participant Redis
+    participant DDB as DynamoDB
+
+    Dashboard->>API: GET /ad/{campaignId}/clicks
+
+    API->>Redis: Check Cache
+
+    alt Cache Hit
+
+        Redis-->>API: Campaign Metrics
+
+    else Cache Miss
+
+        API->>DDB: Query Aggregates
+
+        DDB-->>API: Campaign Metrics
+
+        API->>Redis: Populate Cache
+
+    end
+
+    API-->>Dashboard: Response
+
+
+
+4. flink-checkpoint-recovery
+
+
+
+sequenceDiagram
+    autonumber
+
+    participant K as Kafka/MSK
+    participant F as Apache Flink
+    participant S as Checkpoint Store (S3)
+    participant D as DynamoDB
+
+    K->>F: Consume Event Stream
+
+    F->>S: Save Checkpoint
+
+    Note right of S: Session State<br/>Attribution State<br/>Window State<br/>Kafka Offsets
+
+    Note over F: TaskManager Failure
+
+    F->>S: Load Latest Checkpoint
+
+    S-->>F: Restore State & Offsets
+
+    F->>K: Resume From Last Stored Offset
+
+    K-->>F: Replay Unprocessed Events
+
+    F->>D: Continue Aggregation Processing
+
+    D-->>F: Write Successful
